@@ -80,6 +80,22 @@ function interpoly(x, coeffs, interval_breaks)
     return ip
 end
 
+# Stage 1, Step 2 - compress the phi_j functions
+function compressPhi(phi,x,w,m)
+    n = length(x)
+    A = zeros(n,m)
+    for j = 1:m
+        A[:,j] = phi.(j,x).*sqrt.(w)
+    end
+    F = qr(A, pivot == ColumnNorm())
+    U = F.Q 
+    for i = 1:n
+        U[i,:] /= sqrt(w[i])
+    end
+    lambda = Diagonal(F.R)
+    return U,lambda
+end
+
 
 f = log
 a = 1e-3
