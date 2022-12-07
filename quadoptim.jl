@@ -86,29 +86,21 @@ function interpoly(xx, coeffs, interval_breaks)
 end
 
 # Stage 1, Step 2 - compress the phi_j functions
-function compressPhi(phi,x,w,m)
+function compressPhi(phi,x,w,m,eps_quad)
     n = length(x)
     A = zeros(n,m)
     for j = 1:m
-        A[:,j] = phi.(j,x).*sqrt.(w)
+        for i = 1:n
+            A[i,j] = phi(j,x[i])*sqrt(w[i])
+        end
     end
-    F = qr(A, pivot == ColumnNorm())
-    U = F.Q 
+    A_svd = svd(A)
+    U = A_svd.U 
     for i = 1:n
         U[i,:] /= sqrt(w[i])
     end
-    lambda = Diagonal(F.R)
-    return U,lambda
+    k = sum(A_svd.s .> eps_quad)
+    return U[:,1:k], A_svd.s[1:k]
 end
 
 
-f = log
-a = 1e-3
-b = 3
-k = 16
-tol = 1e-5
-coeffs, interval_breaks = adaptiveInterp(f,a,b,k,tol)
-
-xx = LinRange(a,b,300)
-ip = interpoly(xx, coeffs, interval_breaks)
-plot(xx,ip)
