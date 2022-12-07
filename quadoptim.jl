@@ -1,5 +1,6 @@
 using LinearAlgebra
 using Polynomials,SpecialPolynomials
+using Plots
 
 # define phi i
 
@@ -10,8 +11,16 @@ function LegendreRoots(k)
     return roots(Legendre(a))
 end
 
-function recursiveInterp(f, a, b, tol, Vqr, legnodes)
-    x = (b-a)*legnodes/2 + (b+a)/2
+function quadWeights(xx)
+    k = length(xx)
+    V = vander(Legendre,xx,k)
+    iV = inv(V)
+    poly = [integrate(Legendre(iV[:,i])) for i = 1:k]
+    return [poly[i](1.0) - poly[i](-1.0) for i = 1:k]
+end
+
+function recursiveInterp(f, a, b, k, tol, Vqr, legnodes)
+    x = 0.5*(b-a)*legnodes .+ (b+a)/2
     # From Lagrange find Legendre coefficients
     alphas = Vqr\f.(x)
     # Test stopping condition
@@ -26,11 +35,11 @@ function recursiveInterp(f, a, b, tol, Vqr, legnodes)
     end
 end
 
-function adaptiveInterp(f, a, b, tol)
+function adaptiveInterp(f, a, b, k, tol)
     # Construct 2k Legendre nodes x1:x2k on [-1,1]
     legnodes = LegendreRoots(2k)
     # Construct Lagrange interpolating matrix
-    V = vander(::Legendre, legnodes, 2k)
+    V = vander(Legendre, legnodes, 2k)
     # Pre-factor it
     Vqr = qr(V)
     # Adaptively interpolate
@@ -44,18 +53,18 @@ function bisect_srch(x,Y)
     lo = 1
     hi = n
     while lo+1 < hi
-      ix = (hi+lo)>>1
-      yy = Y[ix]
-      if yy <= x
-        lo = ix
-      else
-        hi = ix
-      end
+        ix = (hi+lo)>>1
+        yy = Y[ix]
+        if yy <= x
+            lo = ix
+        else
+            hi = ix
+        end
     end
     return lo
-  end
+end
 
-function interpoly(xx, coeffs, interval_breaks)
+function interpoly(x, coeffs, interval_breaks)
     nbrac = length(coeffs)
     n = length(x)
     interps = [Legendre(coeffs[i][0]) for i = 1:nbrac]
@@ -75,9 +84,14 @@ end
 f = log
 a = 1e-3
 b = 3
+k = 16
 tol = 1e-5
-coeffs, brackets, interval_breaks = adaptiveInterp(f,a,b,tol)
+
+coeffs,brackets = recursiveInterp(f,a,b,k,tol,Vqr,legnodes)
+#=
+coeffs, brackets, interval_breaks = adaptiveInterp(f,a,b,k,tol)
 
 xx = LinRange(a,b,300)
 ip = interpoly(xx, coeffs, interval_breaks)
 plot(xx,ip)
+=#
