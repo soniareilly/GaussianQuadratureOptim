@@ -55,7 +55,7 @@ function bisect_srch(x,Y)
     return lo
   end
 
-function interpoly(xx, coeffs, interval_breaks)
+function interpoly(x, coeffs, interval_breaks)
     nbrac = length(coeffs)
     n = length(x)
     interps = [Legendre(coeffs[i][0]) for i = 1:nbrac]
@@ -69,6 +69,22 @@ function interpoly(xx, coeffs, interval_breaks)
         ip[i] = interps[lo](xnorm)
     end
     return ip
+end
+
+# Stage 1, Step 2 - compress the phi_j functions
+function compressPhi(phi,x,w,m)
+    n = length(x)
+    A = zeros(n,m)
+    for j = 1:m
+        A[:,j] = phi.(j,x).*sqrt.(w)
+    end
+    F = qr(A, pivot == ColumnNorm())
+    U = F.Q 
+    for i = 1:n
+        U[i,:] /= sqrt(w[i])
+    end
+    lambda = Diagonal(F.R)
+    return U,lambda
 end
 
 
