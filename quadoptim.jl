@@ -132,7 +132,7 @@ function interpoly2(xx, coeffs, interval_breaks, idx=1)
     return ip
 end
 
-# Stage 1, Step 2 - compress the phi_j functions
+# Stage 1, Step 2,3,4 - compress the phi_j functions
 function compressPhi(phi,x,w,m,eps_quad)
     n = length(x)
     A = zeros(n,m)
@@ -150,6 +150,25 @@ function compressPhi(phi,x,w,m,eps_quad)
     return U[:,1:k], A_svd.s[1:k]
 end
 
+# Stage 2 -- algorithm 3.3, modified Gram-Schmidt to get k-point quadrature for u1...uk
+function modifiedGS(U,x,w)
+    n,k = size(U)
+    r = zeros(k,1)
+    B = zeros(k,n)
+    for j = 1:n
+        for i = 1:k
+            r[i] += U[j,i]*w[j]
+            B[i,j] = U[j,i]*sqrt(w[j])
+        end
+    end
+    F = qr(B, Val(true))
+    idxs = F.p[1:k]
+    R11 = F.R[:,1:k]
+    z = R11\F.Q'*r
+    xnew = x[idxs]
+    wnew = z.*sqrt.(w[1:k]) # seems suspish -- why 1:k instead of idxs? Might be a typo
+    return xnew, wnew
+end
 
 function F(x,y,o,l)
     sql = sqrt(max(0.0,l*l-o*o))
