@@ -184,6 +184,180 @@ function modifiedGS(U,x,w)
     return xnew, wnew
 end
 
+# helper function for GaussNewton! -- evaluates f and gradf
+function Newtonf(x_n,w_n,U,r)
+    k = size(U,2)
+    n = length(x_n)
+    f = 0
+    r_n = zeros(k,1)
+    grad1 = zeros(n,1)
+    grad2 = zeros(n,1)
+    U_n = funcInterp(U,x_n,legnodes,interval_breaks)
+    dU_n = derivInterp(U,x_n,legnodes,interval_breaks)
+    for jj = 1:n
+        for ii = 1:k
+            r_n[ii] += U_n[jj,ii]*w_n[jj]
+        end
+    end
+    for ii = 1:k
+        f += (r_n[ii] - r[ii])^2
+        for jj = 1:n
+            grad1[jj] += w_n[jj]*dU_n[jj,ii]*(r_n[ii] - r[ii])
+            grad2[jj] += U_n[jj,ii]*(r_n[ii] - r[ii])
+        end
+    end
+    gradf = vcat(grad1,grad2)
+    return f,gradf
+end
+
+function GaussNewton!(x_n,w_n,U,r,iters)
+    k = size(U,2)
+    n = length(x_n)
+    for idx = 1:iters
+        U_n = funcInterp(U,x_n,legnodes,interval_breaks)
+        dU_n = derivInterp(U,x_n,legnodes,interval_breaks)
+        J = hcat(dU_n'.*w_n,U_n')
+        A = inv(J*J')
+        # Compute Gauss-Newton direction
+        Dx = A*J'*r
+        # line search
+        alpha = 1
+        lambda = 0.1
+        beta = 0.2
+        while true
+            testx .= x_n .+ alpha*Dx[1:n]
+            testw .= w_n .+ alpha*Dx[n+1:2n]
+            f_old, g_old = Newtonf(x_n,w_n,U,r)
+            f_new, g_new = Newtonf(testx,testw,U,r)
+            if (f_new - lambda*alpha*dot(g_old,Dx) <= f_old) && (dot(g_new,Dx) >= beta*dot(g_old,Dx))
+                break 
+            end
+            alpha *= 0.5
+        end
+
+        # update x and w
+        x_n .+= alpha*Dx[1:n]
+        w_n .+= alpha*Dx[n+1:2n]
+    end
+    return x_n, w_n
+end
+
+# Stage 3 - reduce k-node quadrature rule to one that is as small as possible
+function quadReduce(U,x_step1,w_step1,x_tilde,w_tilde,a,b,eps_quad)
+    k = size(U,2)
+    # current size of quadrature rule
+    n = k
+    # initialize x, w
+    x_n = copy(x_tilde)
+    w_n = copy(w_tilde)
+    # reduction not complete
+    complete = false
+    
+    # compute RHS
+    r = zeros(k,1)
+    for j = 1:n
+        for i = 1:k
+            r[i] += U[j,i]*w_step1[j]
+        end
+    end
+
+    # loop until can't reduce quadrature rule any further
+    while !complete
+        # Step 1
+        U_n = funcInterp(U,x_n,legnodes,interval_breaks)
+        dU_n = derivInterp(U,x_n,legnodes,interval_breaks)
+        J = hcat(dU_n'.*w_n,U_n')
+        A = inv(J*J')
+        # gradient magnitude
+        eta = zeros(n,1)
+        for idx = 1:n
+            # Sherman Morrison Woodbury (twice)
+            e_idx = zeros(2n,1); e_idx[idx] = 1
+            e_idxn = zeros(2n,1); e_idxn[idx+n] = 1
+            upd1 = J[:,idx]*e_idx'
+            upd2 = J[:,idx+n]*e_idxn'
+            J_idx = J-upd1-upd2
+            A_idx = A - A*upd1*inv(I + upd1'*A*upd1)*upd1'*A
+            A_idx = A_dx - A_idx*upd2*inv(I + upd2'*A_idx*upd2)*upd2'*A_idx
+            # Compute Gauss-Newton direction
+            Dx_idx = A_idx*J_idx'*r
+            eta[idx] = norm(Dx_idx)
+        end
+        ord = sortperm(eta)
+        eta = eta[ord]
+        x_n = x_n[ord]
+        w_n = w_n[ord]
+
+        # Step 2
+        accepted = false
+        j = 1
+        eps = zeros(n,1)
+        while !accepted && j <= n
+            x_j = deleteat(x_n,j)
+            w_j = deleteat(w_n,j)
+            x_jnew,w_jnew = GaussNewton!(x_j,w_j,U,r,4)
+            # compute error estimate
+            r_jnew = zeros(k,1)
+            U_jnew = funcInterp(U,x_jnew,legnodes,interval_breaks)
+            for jj = 1:n-1
+                for ii = 1:k
+                    r_jnew[ii] += U_jnew[jj,ii]*w_jnew[jj]
+                end
+            end
+            for ii = 1:k
+                eps[j] += (r_jnew[ii] - r[ii])^2
+            end
+            if eps[j] < eps_quad
+                accepted = true
+            end
+            j += 1
+        end
+        # Step 3
+        if !accepted
+            ord = sortperm(eps)
+            x_n = x_n[eps]
+            w_n = w_n[eps]
+            accepted2 = false
+            j = 1
+            while !accepted2 && j <= n
+                x_j = deleteat(x_n,j)
+                w_j = deleteat(w_n,j)
+                x_jnew,w_jnew = GaussNewton!(x_j,w_j,U,r,30)
+                # compute error estimate
+                eps = 0
+                r_jnew = zeros(k,1)
+                U_jnew = funcInterp(U,x_jnew,legnodes,interval_breaks)
+                for jj = 1:n-1
+                    for ii = 1:k
+                        r_jnew[ii] += U_jnew[jj,ii]*w_jnew[jj]
+                    end
+                end
+                for ii = 1:k
+                    eps += (r_jnew[ii] - r[ii])^2
+                end
+                if eps < eps_quad
+                    accepted2 = true
+                end
+                j += 1
+            end
+            if !accepted2
+                # completed, cannot reduce to n-1, do not update x_n,w_n
+                complete = true
+            else
+                # set new n-1-point quadrature
+                x_n = x_jnew
+                w_n = w_jnew
+                n -= 1
+            end
+        # Step 4
+        else
+            x_n = x_jnew
+            w_n = w_jnew
+            n -= 1
+        end
+    end
+end
+
 function F(x,y,o,l)
     sql = sqrt(max(0.0,l*l-o*o))
     return exp(-x*sql)*l/sql*cos(y*l)
