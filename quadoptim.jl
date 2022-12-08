@@ -1,27 +1,28 @@
 using LinearAlgebra
-using Polynomials,SpecialPolynomials
+using Jacobi
 using Plots
 
 # define phi i
 
-# roots of the kth order Legendre polynomial
-function LegendreRoots(k)
-    a = zeros(k+1)
-    a[end] = 1.0
-    return real.(roots(Legendre(a)))
-end
-
-# Compute a set of quadrature weights for a set of quadrature nodes
-function quadWeights(xx)
-    k = length(xx)
-    V = vander(Legendre,xx,k)
-    iV = inv(V)
-    poly = [integrate(Legendre(iV[:,i])) for i = 1:k]
-    return [poly[i](1.0) - poly[i](-1.0) for i = 1:k]
+# Vandermonde matrix for Legendre polynomials
+function legvander(xx,k)
+    n = length(xx)
+    if k == 0
+        return ones(n,1)
+    elseif k == 1
+        return hcat(ones(n,1),xx)
+    else
+        L = ones(n,k+1)
+        L[:,2] .= xx
+        for i = 1:k-1
+            @. L[:,i+2] = (2i+3)/(i+2)*xx*L[:,i+1] - (i+1)/(i+2)*L[:,i]
+        end
+        return L
+    end
 end
 
 # Helper fn. for adaptiveInterp
-function recursiveInterp(f, a, b, k, tol, Vlu, legnodes)
+function recursiveInterp(f, a, b, k, tol, Vlu, legnodes, depth)
     x = 0.5*(b-a)*legnodes .+ (b+a)/2
     # From Lagrange find Legendre coefficients
     alphas = Vlu\f.(x)
@@ -29,10 +30,12 @@ function recursiveInterp(f, a, b, k, tol, Vlu, legnodes)
     err = sum(alphas[k:2k].^2)
     if err < tol
         return ([alphas[1:k]], [a,b])
+    elseif depth >= 40
+        error("Recursion has proceeded too far! Check your function and domain.")
     else
         midpt = 0.5*(a+b)
-        left = recursiveInterp(f, a, midpt, k, tol, Vlu, legnodes)
-        right = recursiveInterp(f, midpt, b, k, tol, Vlu, legnodes)
+        left = recursiveInterp(f, a, midpt, k, tol, Vlu, legnodes, depth+1)
+        right = recursiveInterp(f, midpt, b, k, tol, Vlu, legnodes, depth+1)
         return (cat(left[1], right[1],dims=1), cat(left[2], right[2],dims=1))
     end
 end
@@ -40,24 +43,35 @@ end
 # Adaptive interpolation
 function adaptiveInterp(f, a, b, k, tol)
     # Construct 2k Legendre nodes x1:x2k on [-1,1]
-    legnodes = LegendreRoots(2k)
+    legnodes = legendre_zeros(2k)
     # Construct Lagrange interpolating matrix
-    V = vander(Legendre, legnodes, 2k-1)
+    V = legvander(legnodes, 2k-1)
     # Pre-factor it
     Vlu = lu(V)
     # Adaptively interpolate
-    coeffs,brackets = recursiveInterp(f,a,b,k,tol,Vlu,legnodes)
+    coeffs,brackets = recursiveInterp(f,a,b,k,tol,Vlu,legnodes,1)
     interval_breaks = unique(brackets)
     return coeffs, interval_breaks
+end
+
+# debugging code
+function basicInterp(f, a, b, k, tol)
+    legnodes = legendre_zeros(k)
+    V = legvander(legnodes, k-1)
+    Vlu = lu(V)
+    x = 0.5*(b-a)*legnodes .+ (b+a)/2
+    return Vlu\f.(x)
 end
 
 function totalInterp(fs, a, b, k, tol)
     # Find all subdivision points for all f_is
     interval_breaks = []
+    xx = LinRange(a,b,300)
     for f in fs
         cf,ib = adaptiveInterp(f,a,b,k,tol)
         interval_breaks = cat(interval_breaks,ib,dims=1)
     end
+
     interval_breaks = unique(interval_breaks)
     sort!(interval_breaks)
 
@@ -65,8 +79,8 @@ function totalInterp(fs, a, b, k, tol)
     nfuns = length(fs)
     nbreaks = length(interval_breaks)-1
     fi = zeros(k,nbreaks,nfuns)
-    legnodes = LegendreRoots(k)
-    V = vander(Legendre,legnodes,k-1)
+    legnodes = legendre_zeros(k)
+    V = legvander(legnodes,k-1)
     Vlu = lu(V)
     ff = zeros(k,nfuns)
     xx = zeros(k)
@@ -102,8 +116,8 @@ end
 # Evaluates an adaptively interpolated function at an array of points xx
 function interpoly(xx, coeffs, interval_breaks)
     nbrac = length(coeffs)
+    k = length(coeffs[1])
     n = length(xx)
-    interps = [Legendre(coeffs[i]) for i = 1:nbrac]
     ip = zeros(n)
     for i = 1:n
         x = xx[i]
@@ -111,15 +125,14 @@ function interpoly(xx, coeffs, interval_breaks)
         a = interval_breaks[lo]
         b = interval_breaks[lo+1]
         xnorm = (2x-(a+b))/(b-a)
-        ip[i] = interps[lo](xnorm)
+        ip[i] = dot(legvander(xnorm,k-1)[:],coeffs[lo])
     end
     return ip
 end
 function interpoly2(xx, coeffs, interval_breaks, idx=1)
     nbrac = length(interval_breaks)-1
+    k = size(coeffs)[1]
     n = length(xx)
-    # Only difference is format of coeffs
-    interps = [Legendre(coeffs[:,i,idx]) for i = 1:nbrac]
     ip = zeros(n)
     for i = 1:n
         x = xx[i]
@@ -127,7 +140,8 @@ function interpoly2(xx, coeffs, interval_breaks, idx=1)
         a = interval_breaks[lo]
         b = interval_breaks[lo+1]
         xnorm = (2x-(a+b))/(b-a)
-        ip[i] = interps[lo](xnorm)
+        # Only difference is format of coeffs
+        ip[i] = dot(legvander(xnorm,k-1)[:],coeffs[:,lo,idx])
     end
     return ip
 end
@@ -174,16 +188,18 @@ function F(x,y,o,l)
     sql = sqrt(max(0.0,l*l-o*o))
     return exp(-x*sql)*l/sql*cos(y*l)
 end
+#=
 function sinphi(j,x)
     return sin.(2*pi/j * x)
 end
-js = 1:6
+js = 1:2
 fs = [x->sinphi(j,x) for j in js]
 a = -pi
 b = pi
 k = 16
 tol = 1e-7
-#=
+=#
+
 a = 1
 b = 5
 xs = LinRange(1,4,8)
@@ -192,13 +208,12 @@ os = LinRange(a,b,10)
 fs = [l->F(x,y,o,l) for x in xs, y in ys, o in os][:]
 k = 16
 tol = 1e-3
-lmin = 0
+lmin = 6
 lmax = 60
-=#
-coeffs, interval_breaks = totalInterp(fs,a,b,k,tol)
-println(interval_breaks)
 
-xx = LinRange(a,b,300)
+coeffs, interval_breaks = totalInterp(fs,lmin,lmax,k,tol)
+
+xx = LinRange(lmin,lmax,300)
 test_idx = 1
 ip = interpoly2(xx, coeffs, interval_breaks, test_idx)
 plot(xx,ip)
