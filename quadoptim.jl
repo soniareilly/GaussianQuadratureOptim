@@ -82,18 +82,18 @@ function totalInterp(fs, a, b, k, tol)
     legnodes = legendre_zeros(k)
     V = legvander(legnodes,k-1)
     Vlu = lu(V)
-    ff = zeros(k,nfuns)
+    ff = zeros(k*nbreaks,nfuns)
     xx = zeros(k)
     for j = 1:nbreaks
         lo = interval_breaks[j]
         hi = interval_breaks[j+1]
         xx .= 0.5*(hi-lo)*legnodes .+ (hi+lo)/2
         for i = 1:nfuns
-            ff[:,i] .= fs[i].(xx)
+            ff[(j*k+1-k):(j*k),i] .= fs[i].(xx)
         end
-        fi[:,j,:] .= Vlu\ff
+        fi[:,j,:] .= Vlu\ff[(j*k+1-k):(j*k),:]
     end
-    return fi, interval_breaks
+    return fi, interval_breaks, ff
 end
 
 # Helper fn; bisection search
@@ -358,22 +358,61 @@ function quadReduce(U,x_step1,w_step1,x_tilde,w_tilde,a,b,eps_quad)
     end
 end
 
+
+# Interpolate Uij = u_i(x_j) at arbitrary points xx
+function funcInterp(xx, U, legnodes, interval_breaks)
+    k = length(legnodes)
+    nx = length(xx)
+    nu = size(U,2)
+    ux = zeros(nx,nu)
+    for j = 1:nx
+        x = xx[j]
+        lo = bisect_srch(x,interval_breaks)
+        a = interval_breaks[lo]
+        b = interval_breaks[lo+1]
+        xnorm = (2x-(a+b))/(b-a)
+        ivec = interp_mat([xnorm],legnodes)[:]
+        # We know there are k nodes per subinterval in x_is
+        ux[j,:] .= U[(k*lo+1-k):(k*lo),:]'*ivec
+    end
+    return ux
+end
+
+# Calculate derivatives of u_i given Uij = u_i(x_j)
+function derivInterp(xx, U, legnodes, interval_breaks, iV)
+    k = length(legnodes)
+    nx = length(xx)
+    nu = size(U,2)
+    ux = zeros(nx,nu)
+    for j = 1:nx
+        x = xx[j]
+        lo = bisect_srch(x,interval_breaks)
+        a = interval_breaks[lo]
+        b = interval_breaks[lo+1]
+        xnorm = (2x-(a+b))/(b-a)
+        lvec = 2/(b-a)*iV'*[dlegendre(xnorm,j) for j = 0:k-1]
+        # We know there are k nodes per subinterval in x_is
+        ux[j,:] .= U[(k*lo+1-k):(k*lo),:]'*lvec
+    end
+    return ux
+end
+
 function F(x,y,o,l)
     sql = sqrt(max(0.0,l*l-o*o))
     return exp(-x*sql)*l/sql*cos(y*l)
 end
-#=
+
 function sinphi(j,x)
-    return sin.(2*pi/j * x)
+    return sin.(2*pi*j * x)
 end
-js = 1:2
+js = 1:6
 fs = [x->sinphi(j,x) for j in js]
-a = -pi
-b = pi
+a = -1
+b = 1
 k = 16
 tol = 1e-7
-=#
 
+#=
 a = 1
 b = 5
 xs = LinRange(1,4,8)
@@ -384,11 +423,16 @@ k = 16
 tol = 1e-3
 lmin = 6
 lmax = 60
-
-coeffs, interval_breaks = totalInterp(fs,lmin,lmax,k,tol)
-
-xx = LinRange(lmin,lmax,300)
+=#
+coeffs, interval_breaks, ff = totalInterp(fs,a,b,k,tol)
+legnodes = legendre_zeros(k)
+V = legvander(legnodes,k-1)
+iV = inv(V)
+xx = LinRange(a,b,300)
+dI = derivInterp(xx,ff,legnodes,interval_breaks,iV)
+#=
 test_idx = 1
 ip = interpoly2(xx, coeffs, interval_breaks, test_idx)
-plot(xx,ip)
-plot!(xx,fs[test_idx].(xx))
+=#
+plot(xx,dI)
+#plot!(xx,fs[test_idx].(xx))
