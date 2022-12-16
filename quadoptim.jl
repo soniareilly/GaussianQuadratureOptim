@@ -1,6 +1,6 @@
 using LinearAlgebra
 using Jacobi
-using Plots
+using Plots, LaTeXStrings
 
 # define phi i
 
@@ -27,10 +27,10 @@ function recursiveInterp(f, a, b, k, tol, Vlu, legnodes, depth)
     # From Lagrange find Legendre coefficients
     alphas = Vlu\f.(x)
     # Test stopping condition
-    err = sum(alphas[k:2k].^2)
+    err = sum(alphas[k:2k].^2)#/sum(alphas[1:k].^2)
     if err < tol
         return ([alphas[1:k]], [a,b])
-    elseif depth >= 40
+    elseif depth >= 10
         error("Recursion has proceeded too far! Check your function and domain.")
     else
         midpt = 0.5*(a+b)
@@ -147,12 +147,13 @@ function interpoly2(xx, coeffs, interval_breaks, idx=1)
 end
 
 # Stage 1, Step 2,3,4 - compress the phi_j functions
-function compressPhi(phi,x,w,m,eps_quad)
+function compressPhi(phi,x,w,eps_quad)
+    m = size(phi,2)        # Number of functions
     n = length(x)
     A = zeros(n,m)
     for j = 1:m
         for i = 1:n
-            A[i,j] = phi(j,x[i])*sqrt(w[i])
+            A[i,j] = phi[i,j]*sqrt(w[i])
         end
     end
     A_svd = svd(A)
@@ -160,14 +161,14 @@ function compressPhi(phi,x,w,m,eps_quad)
     for i = 1:n
         U[i,:] /= sqrt(w[i])
     end
-    k = sum(A_svd.s .> eps_quad)
-    return U[:,1:k], A_svd.s[1:k]
+    k = sum(A_svd.S .> eps_quad)
+    return U[:,1:k], A_svd.S[1:k]
 end
 
 # Stage 2 -- algorithm 3.3, modified Gram-Schmidt to get k-point quadrature for u1...uk
 function modifiedGS(U,x,w)
     n,k = size(U)
-    r = zeros(k,1)
+    r = zeros(k)
     B = zeros(k,n)
     for j = 1:n
         for i = 1:k
@@ -180,20 +181,20 @@ function modifiedGS(U,x,w)
     R11 = F.R[:,1:k]
     z = R11\F.Q'*r
     xnew = x[idxs]
-    wnew = z.*sqrt.(w[1:k]) # seems suspish -- why 1:k instead of idxs? Might be a typo
+    wnew = z.*sqrt.(w[idxs])
     return xnew, wnew
 end
 
 # helper function for GaussNewton! -- evaluates f and gradf
-function Newtonf(x_n,w_n,U,r)
+function Newtonf(x_n,w_n,U,r,legnodes,interval_breaks,iV)
     k = size(U,2)
     n = length(x_n)
     f = 0
     r_n = zeros(k,1)
     grad1 = zeros(n,1)
     grad2 = zeros(n,1)
-    U_n = funcInterp(U,x_n,legnodes,interval_breaks)
-    dU_n = derivInterp(U,x_n,legnodes,interval_breaks)
+    U_n = funcInterp(x_n,U,legnodes,interval_breaks)
+    dU_n = derivInterp(x_n,U,legnodes,interval_breaks,iV)
     for jj = 1:n
         for ii = 1:k
             r_n[ii] += U_n[jj,ii]*w_n[jj]
@@ -210,16 +211,18 @@ function Newtonf(x_n,w_n,U,r)
     return f,gradf
 end
 
-function GaussNewton!(x_n,w_n,U,r,iters)
+function GaussNewton!(x_n,w_n,U,r,iters,legnodes,interval_breaks,iV)
     k = size(U,2)
     n = length(x_n)
+    testx = zeros(n)
+    testw = zeros(n)
     for idx = 1:iters
-        U_n = funcInterp(U,x_n,legnodes,interval_breaks)
-        dU_n = derivInterp(U,x_n,legnodes,interval_breaks)
-        J = hcat(dU_n'.*w_n,U_n')
-        A = inv(J*J')
+        U_n = funcInterp(x_n,U,legnodes,interval_breaks)
+        dU_n = derivInterp(x_n,U,legnodes,interval_breaks,iV)
+        #println(size(dU_n'),size(w_n),size(U_n'))
+        J = hcat(dU_n'.*w_n',U_n')
         # Compute Gauss-Newton direction
-        Dx = A*J'*r
+        Dx = J\r
         # line search
         alpha = 1
         lambda = 0.1
@@ -227,8 +230,8 @@ function GaussNewton!(x_n,w_n,U,r,iters)
         while true
             testx .= x_n .+ alpha*Dx[1:n]
             testw .= w_n .+ alpha*Dx[n+1:2n]
-            f_old, g_old = Newtonf(x_n,w_n,U,r)
-            f_new, g_new = Newtonf(testx,testw,U,r)
+            f_old, g_old = Newtonf(x_n,w_n,U,r,legnodes,interval_breaks,iV)
+            f_new, g_new = Newtonf(testx,testw,U,r,legnodes,interval_breaks,iV)
             if (f_new - lambda*alpha*dot(g_old,Dx) <= f_old) && (dot(g_new,Dx) >= beta*dot(g_old,Dx))
                 break 
             end
@@ -243,7 +246,8 @@ function GaussNewton!(x_n,w_n,U,r,iters)
 end
 
 # Stage 3 - reduce k-node quadrature rule to one that is as small as possible
-function quadReduce(U,x_step1,w_step1,x_tilde,w_tilde,a,b,eps_quad)
+function quadReduce(U,x_step1,w_step1,x_tilde,w_tilde,a,b, interval_breaks,eps_quad)
+    @show size(U)
     k = size(U,2)
     # current size of quadrature rule
     n = k
@@ -252,6 +256,13 @@ function quadReduce(U,x_step1,w_step1,x_tilde,w_tilde,a,b,eps_quad)
     w_n = copy(w_tilde)
     # reduction not complete
     complete = false
+
+    # Find correct number of x points
+    n_int = length(interval_breaks)-1
+    nx = div(size(U,1),n_int)
+    legnodes = legendre_zeros(nx)
+    V = legvander(legnodes,nx-1)
+    iV = inv(V)
     
     # compute RHS
     r = zeros(k,1)
@@ -263,24 +274,31 @@ function quadReduce(U,x_step1,w_step1,x_tilde,w_tilde,a,b,eps_quad)
 
     # loop until can't reduce quadrature rule any further
     while !complete
+        println(complete)
         # Step 1
-        U_n = funcInterp(U,x_n,legnodes,interval_breaks)
-        dU_n = derivInterp(U,x_n,legnodes,interval_breaks)
-        J = hcat(dU_n'.*w_n,U_n')
-        A = inv(J*J')
+        U_n = funcInterp(x_n,U,legnodes,interval_breaks)
+        dU_n = derivInterp(x_n,U,legnodes,interval_breaks,iV)
+        J = hcat(dU_n'.*w_n',U_n')
+        #A = inv(J'*J)
         # gradient magnitude
-        eta = zeros(n,1)
+        eta = zeros(n)
         for idx = 1:n
             # Sherman Morrison Woodbury (twice)
+            #=
             e_idx = zeros(2n,1); e_idx[idx] = 1
             e_idxn = zeros(2n,1); e_idxn[idx+n] = 1
             upd1 = J[:,idx]*e_idx'
             upd2 = J[:,idx+n]*e_idxn'
             J_idx = J-upd1-upd2
             A_idx = A - A*upd1*inv(I + upd1'*A*upd1)*upd1'*A
-            A_idx = A_dx - A_idx*upd2*inv(I + upd2'*A_idx*upd2)*upd2'*A_idx
+            A_idx = A_idx - A_idx*upd2*inv(I + upd2'*A_idx*upd2)*upd2'*A_idx
             # Compute Gauss-Newton direction
-            Dx_idx = A_idx*J_idx'*r
+            println(size(A_idx),size(J_idx),size(r))
+            =#
+            J_idx = copy(J)
+            J_idx[:,idx] = zeros(size(J,1))
+            J_idx[:,idx+n] = zeros(size(J,1))
+            Dx_idx = J_idx\r
             eta[idx] = norm(Dx_idx)
         end
         ord = sortperm(eta)
@@ -291,14 +309,18 @@ function quadReduce(U,x_step1,w_step1,x_tilde,w_tilde,a,b,eps_quad)
         # Step 2
         accepted = false
         j = 1
-        eps = zeros(n,1)
+        eps = zeros(n)
+        println("Looking for columns to remove")
         while !accepted && j <= n
-            x_j = deleteat(x_n,j)
-            w_j = deleteat(w_n,j)
-            x_jnew,w_jnew = GaussNewton!(x_j,w_j,U,r,4)
+            println("Index removed: ",j)
+            x_j = copy(x_n)
+            w_j = copy(w_n)
+            deleteat!(x_j,j)
+            deleteat!(w_j,j)
+            x_jnew,w_jnew = GaussNewton!(x_j,w_j,U,r,4,legnodes,interval_breaks,iV)
             # compute error estimate
             r_jnew = zeros(k,1)
-            U_jnew = funcInterp(U,x_jnew,legnodes,interval_breaks)
+            U_jnew = funcInterp(x_jnew,U,legnodes,interval_breaks)
             for jj = 1:n-1
                 for ii = 1:k
                     r_jnew[ii] += U_jnew[jj,ii]*w_jnew[jj]
@@ -314,19 +336,23 @@ function quadReduce(U,x_step1,w_step1,x_tilde,w_tilde,a,b,eps_quad)
         end
         # Step 3
         if !accepted
+            println("No columns removable, looking again in more detail")
             ord = sortperm(eps)
-            x_n = x_n[eps]
-            w_n = w_n[eps]
+            x_n = x_n[ord]
+            w_n = w_n[ord]
             accepted2 = false
             j = 1
             while !accepted2 && j <= n
-                x_j = deleteat(x_n,j)
-                w_j = deleteat(w_n,j)
-                x_jnew,w_jnew = GaussNewton!(x_j,w_j,U,r,30)
+                println("Column removed: ",j)
+                x_j = copy(x_n)
+                w_j = copy(w_n)
+                deleteat!(x_j,j)
+                deleteat!(w_j,j)
+                x_jnew,w_jnew = GaussNewton!(x_j,w_j,U,r,30,legnodes,interval_breaks,iV)
                 # compute error estimate
                 eps = 0
                 r_jnew = zeros(k,1)
-                U_jnew = funcInterp(U,x_jnew,legnodes,interval_breaks)
+                U_jnew = funcInterp(x_jnew,U,legnodes,interval_breaks)
                 for jj = 1:n-1
                     for ii = 1:k
                         r_jnew[ii] += U_jnew[jj,ii]*w_jnew[jj]
@@ -356,10 +382,15 @@ function quadReduce(U,x_step1,w_step1,x_tilde,w_tilde,a,b,eps_quad)
             n -= 1
         end
     end
+    return x_n, w_n
 end
 
-
-# Interpolate Uij = u_i(x_j) at arbitrary points xx
+#= 
+Interpolate Uij = u_i(x_j) at arbitrary points xx
+interval_breaks is the set of divisions in the piecewise polynomial ui
+legnodes is the Legendre nodes xi which form the interpolation pts
+    in each subinterval
+=#
 function funcInterp(xx, U, legnodes, interval_breaks)
     k = length(legnodes)
     nx = length(xx)
@@ -378,7 +409,13 @@ function funcInterp(xx, U, legnodes, interval_breaks)
     return ux
 end
 
-# Calculate derivatives of u_i given Uij = u_i(x_j)
+#= 
+Calculate derivatives of u_i at xx given Uij = u_i(x_j)
+interval_breaks is the set of divisions in the piecewise polynomial ui
+legnodes is the Legendre nodes xi which form the interpolation pts
+    in each subinterval
+iV is the inverse of the Vandermonde matrix Vij = Pj(xi)
+=#
 function derivInterp(xx, U, legnodes, interval_breaks, iV)
     k = length(legnodes)
     nx = length(xx)
@@ -390,6 +427,8 @@ function derivInterp(xx, U, legnodes, interval_breaks, iV)
         a = interval_breaks[lo]
         b = interval_breaks[lo+1]
         xnorm = (2x-(a+b))/(b-a)
+        # We have Pj'(x) but Uij is in nodal form rather than modal form
+        # iV inverts from nodal to modal form
         lvec = 2/(b-a)*iV'*[dlegendre(xnorm,j) for j = 0:k-1]
         # We know there are k nodes per subinterval in x_is
         ux[j,:] .= U[(k*lo+1-k):(k*lo),:]'*lvec
@@ -401,7 +440,7 @@ function F(x,y,o,l)
     sql = sqrt(max(0.0,l*l-o*o))
     return exp(-x*sql)*l/sql*cos(y*l)
 end
-
+#=
 function sinphi(j,x)
     return sin.(2*pi*j * x)
 end
@@ -411,28 +450,62 @@ a = -1
 b = 1
 k = 16
 tol = 1e-7
-
+=#
 #=
 a = 1
 b = 5
-xs = LinRange(1,4,8)
-ys = LinRange(0,4*sqrt(2)*b,12)
-os = LinRange(a,b,10)
+xs = LinRange(1,4,4)
+ys = LinRange(0,4*sqrt(2)*b,4)
+os = LinRange(a,b,4)
 fs = [l->F(x,y,o,l) for x in xs, y in ys, o in os][:]
 k = 16
 tol = 1e-3
 lmin = 6
-lmax = 60
-=#
-coeffs, interval_breaks, ff = totalInterp(fs,a,b,k,tol)
+lmax = 16
+
+coeffs, interval_breaks, ff = totalInterp(fs,lmin,lmax,k,tol)
 legnodes = legendre_zeros(k)
 V = legvander(legnodes,k-1)
 iV = inv(V)
-xx = LinRange(a,b,300)
-dI = derivInterp(xx,ff,legnodes,interval_breaks,iV)
+xx = LinRange(lmin,lmax,300)
+fI = funcInterp(xx,ff,legnodes,interval_breaks)
 #=
 test_idx = 1
 ip = interpoly2(xx, coeffs, interval_breaks, test_idx)
 =#
-plot(xx,dI)
-#plot!(xx,fs[test_idx].(xx))
+#plot(xx,fI)
+plot(xx,[fs[i](xx[j])-fI[j,i] for j=1:length(xx), i=1:20])
+=#
+
+#=
+f = x -> abs(x)^(1/3)
+a = -1
+b = 1
+k = 3
+tols = [5e-2,1e-2,1e-5]
+xx = LinRange(a,b,300)
+nt = length(tols)
+iS = zeros(length(xx),nt)
+=#
+
+#=
+a = 1
+b = 5
+x = 1
+y = 5
+o = 4
+f = l -> F(x,y,o,l)
+lmin = 6
+lmax = 16
+xx = LinRange(lmin,lmax,300)
+k = 5
+tols = [5e-1,1e-1,1e-4]
+for i = 1:nt
+    coeffs,interval_breaks = adaptiveInterp(f, lmin, lmax, k, tols[i])
+    iS[:,i] .= interpoly(xx,coeffs,interval_breaks)
+    println(interval_breaks)
+end
+
+plot(xx,f.(xx), label=L"$\phi(\xi;z=%$x,x=%$y,\omega=%$o$)", xlabel="\$x\$", ylabel="\$f(x)\$", title="Adaptive Interpolation, \$N=5\$")
+plot!(xx,iS, label = ["tol = $(tols[1])" "tol = $(tols[2])" "tol = $(tols[3])"])
+=#
