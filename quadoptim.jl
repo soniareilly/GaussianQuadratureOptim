@@ -227,7 +227,10 @@ function GaussNewton!(x_n,w_n,U,r,iters,legnodes,interval_breaks,iV)
         alpha = 1
         lambda = 0.1
         beta = 0.2
-        while true
+
+        narmijo = 1
+        max_armijo = 20
+        while narmijo <= max_armijo
             testx .= x_n .+ alpha*Dx[1:n]
             testw .= w_n .+ alpha*Dx[n+1:2n]
             f_old, g_old = Newtonf(x_n,w_n,U,r,legnodes,interval_breaks,iV)
@@ -236,6 +239,10 @@ function GaussNewton!(x_n,w_n,U,r,iters,legnodes,interval_breaks,iV)
                 break 
             end
             alpha *= 0.5
+            narmijo += 1
+        end
+        if (narmijo > max_armijo)
+            error("Armijo line search failed; Dx not a descent direction")
         end
 
         # update x and w
